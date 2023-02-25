@@ -1,0 +1,6 @@
+.:53 {
+	cache
+	whoami
+	dnstap tcp://127.0.0.1:6000 full
+	forward . tls://1.1.1.1:853 tls://1.0.0.1:853
+}
