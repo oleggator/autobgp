@@ -1,0 +1,8 @@
+global:
+  config:
+    as: 65432
+    router-id: 192.168.88.247
+neighbors:
+  - config:
+      neighbor-address: 192.168.88.1
+      peer-as: 64512

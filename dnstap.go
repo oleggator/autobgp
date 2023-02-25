@@ -10,9 +10,8 @@ import (
 func listen(addr string, handler func(message *dnstap.Message)) error {
 	l, err := net.Listen("tcp", addr)
 	if err != nil {
-		log.Fatalln(err)
+		return err
 	}
-	i := dnstap.NewFrameStreamSockInput(l)
 
 	ch := make(chan []byte)
 	defer close(ch)
@@ -27,7 +26,8 @@ func listen(addr string, handler func(message *dnstap.Message)) error {
 			handler(dt.Message)
 		}
 	}(ch)
-	i.ReadInto(ch)
+
+	dnstap.NewFrameStreamSockInput(l).ReadInto(ch)
 
 	return err
 }
