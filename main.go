@@ -2,75 +2,83 @@ package main
 
 import (
 	"context"
+	"flag"
+	"os"
+
 	"github.com/miekg/dns"
-	api "github.com/osrg/gobgp/v3/api"
+	apipb "github.com/osrg/gobgp/v3/api"
+	"github.com/osrg/gobgp/v3/pkg/log"
 	"github.com/osrg/gobgp/v3/pkg/server"
-	apb "google.golang.org/protobuf/types/known/anypb"
-	"log"
+	"google.golang.org/protobuf/types/known/anypb"
 )
 
-var (
-	nextHop = "192.168.1.1"
-
-	zones = Zones{
-		"netflix.com.",
-	}
-
-	asn       uint32 = 65432
-	routerID         = "192.168.88.247"
-	bgpListen int32  = 179
-
-	neighborAddress        = "192.168.88.1"
-	neighborAsn     uint32 = 64512
-
-	authoritativeDNS = "1.1.1.1:853"
-)
-
-func init() {
-	zones.Normalize()
-}
+var peerGroupName = "default-peer-group"
+var logger = log.NewDefaultLogger()
 
 func main() {
-	s := server.NewBgpServer()
+	configPath := flag.String("c", "config.yaml", "config path")
+	flag.Parse()
+
+	configFile, err := os.Open(*configPath)
+	if err != nil {
+		logger.Fatal(err.Error(), log.Fields{})
+	}
+	defer configFile.Close()
+
+	config, err := ReadConfig(configFile)
+	if err != nil {
+		logger.Fatal(err.Error(), log.Fields{})
+	}
+
+	s := server.NewBgpServer(server.LoggerOption(logger))
 	go s.Serve()
 
-	if err := s.StartBgp(context.Background(), &api.StartBgpRequest{
-		Global: &api.Global{
-			Asn:        asn,
-			RouterId:   routerID,
-			ListenPort: bgpListen,
+	if err := s.StartBgp(context.Background(), &apipb.StartBgpRequest{
+		Global: &apipb.Global{
+			Asn:        config.BGP.ASN,
+			RouterId:   config.BGP.RouterID,
+			ListenPort: int32(config.BGP.ListenPort),
 		},
 	}); err != nil {
-		log.Fatal(err)
+		logger.Fatal(err.Error(), log.Fields{})
 	}
 
-	r := &api.WatchEventRequest{Peer: &api.WatchEventRequest_Peer{}}
-	if err := s.WatchEvent(context.Background(), r, func(r *api.WatchEventResponse) {
-		if p := r.GetPeer(); p != nil && p.Type == api.WatchEventResponse_PeerEvent_STATE {
-			log.Println(p)
+	r := &apipb.WatchEventRequest{Peer: &apipb.WatchEventRequest_Peer{}}
+	if err := s.WatchEvent(context.Background(), r, func(r *apipb.WatchEventResponse) {
+		if p := r.GetPeer(); p != nil && p.Type == apipb.WatchEventResponse_PeerEvent_STATE {
+			logger.Info(p.String(), log.Fields{})
 		}
 	}); err != nil {
-		log.Fatal(err)
+		logger.Fatal(err.Error(), log.Fields{})
 	}
 
-	if err := s.AddPeer(context.Background(), &api.AddPeerRequest{
-		Peer: &api.Peer{
-			Conf: &api.PeerConf{
-				NeighborAddress: neighborAddress,
-				PeerAsn:         neighborAsn,
+	if err := s.AddPeerGroup(context.Background(), &apipb.AddPeerGroupRequest{
+		PeerGroup: &apipb.PeerGroup{
+			Conf: &apipb.PeerGroupConf{
+				PeerAsn:       config.BGP.Neighbors.ASN,
+				PeerGroupName: peerGroupName,
 			},
 		},
 	}); err != nil {
-		log.Fatal(err)
+		logger.Fatal(err.Error(), log.Fields{})
 	}
 
-	autoBGP, err := NewAutoBGP(s, nextHop)
+	if err := s.AddDynamicNeighbor(context.Background(), &apipb.AddDynamicNeighborRequest{
+		DynamicNeighbor: &apipb.DynamicNeighbor{
+			Prefix:    config.BGP.Neighbors.Prefix,
+			PeerGroup: peerGroupName,
+		},
+	}); err != nil {
+		logger.Fatal(err.Error(), log.Fields{})
+	}
+
+	autoBGP, err := NewAutoBGP(s, config.DNS.AuthoritativeDNS, config.Rules)
 	if err != nil {
-		log.Fatalln(err)
+		logger.Fatal(err.Error(), log.Fields{})
 	}
 
-	if err := dns.ListenAndServe("0.0.0.0:53", "udp", autoBGP); err != nil {
-		log.Fatalln(err)
+	if err := dns.ListenAndServe(config.DNS.Listen, config.DNS.Network, autoBGP); err != nil {
+		logger.Fatal(err.Error(), log.Fields{})
 	}
 }
 
@@ -80,17 +88,20 @@ type AutoBGP struct {
 
 	bgpServer *server.BgpServer
 
-	netxHopAttr *apb.Any
-	originAttr  *apb.Any
+	netxHopAttr *anypb.Any
+	originAttr  *anypb.Any
+
+	rules RulesConfig
 }
 
-func NewAutoBGP(bgpServer *server.BgpServer, nextHop string) (*AutoBGP, error) {
+func NewAutoBGP(bgpServer *server.BgpServer, authoritativeDNS string, rules RulesConfig) (*AutoBGP, error) {
 	autoBGP := &AutoBGP{
 		dnsClient: dns.Client{Net: "tcp-tls"},
 		bgpServer: bgpServer,
+		rules:     rules,
 	}
 
-	netxHopAttr, err := apb.New(&api.NextHopAttribute{NextHop: nextHop})
+	netxHopAttr, err := anypb.New(&apipb.NextHopAttribute{NextHop: rules.NextHop})
 	if err != nil {
 		return nil, err
 	}
@@ -102,7 +113,7 @@ func NewAutoBGP(bgpServer *server.BgpServer, nextHop string) (*AutoBGP, error) {
 	}
 	autoBGP.dnsConn = conn
 
-	originAttr, err := apb.New(&api.OriginAttribute{Origin: 0})
+	originAttr, err := anypb.New(&apipb.OriginAttribute{Origin: 0})
 	if err != nil {
 		return nil, err
 	}
@@ -111,49 +122,68 @@ func NewAutoBGP(bgpServer *server.BgpServer, nextHop string) (*AutoBGP, error) {
 	return autoBGP, nil
 }
 
+func (a *AutoBGP) Close() {
+	a.dnsConn.Close()
+}
+
 func (a *AutoBGP) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	defer w.Close()
 
+	resp, err := a.handleMessage(req)
+	if err != nil {
+		logger.Error(err.Error(), log.Fields{})
+		return
+	}
+
+	if err := w.WriteMsg(resp); err != nil {
+		logger.Error(err.Error(), log.Fields{})
+		return
+	}
+}
+
+func (a *AutoBGP) handleMessage(req *dns.Msg) (*dns.Msg, error) {
 	resp, _, err := a.dnsClient.ExchangeWithConn(req, a.dnsConn)
 	if err != nil {
-		log.Fatalln(err)
+		return nil, err
 	}
 
 	for _, answer := range resp.Answer {
+		// A records are currently only supported
 		answer, ok := answer.(*dns.A)
 		if !ok {
 			continue
 		}
 
-		if match := zones.Matches(answer.Header().Name); match == "" {
+		if match := a.rules.Zones.Matches(answer.Hdr.Name); match == "" {
 			continue
 		}
 
-		ip := api.IPAddressPrefix{
+		if len(answer.A) == 0 || answer.A.IsUnspecified() || answer.A.IsLoopback() || answer.A.IsPrivate() {
+			continue
+		}
+
+		ip := apipb.IPAddressPrefix{
 			Prefix:    answer.A.String(),
 			PrefixLen: 32,
 		}
-		log.Println(answer.Header().Name, ip.Prefix)
 
-		nlri, err := apb.New(&ip)
+		nlri, err := anypb.New(&ip)
 		if err != nil {
-			log.Fatalln(err)
+			return nil, err
 		}
 
-		_, err = a.bgpServer.AddPath(context.Background(), &api.AddPathRequest{
-			TableType: api.TableType_ADJ_OUT,
-			Path: &api.Path{
+		_, err = a.bgpServer.AddPath(context.Background(), &apipb.AddPathRequest{
+			TableType: apipb.TableType_ADJ_OUT,
+			Path: &apipb.Path{
 				Nlri:   nlri,
-				Pattrs: []*apb.Any{a.originAttr, a.netxHopAttr},
-				Family: &api.Family{Afi: api.Family_AFI_IP, Safi: api.Family_SAFI_UNICAST},
+				Pattrs: []*anypb.Any{a.originAttr, a.netxHopAttr},
+				Family: &apipb.Family{Afi: apipb.Family_AFI_IP, Safi: apipb.Family_SAFI_UNICAST},
 			},
 		})
 		if err != nil {
-			log.Fatalln(err)
+			return nil, err
 		}
 	}
 
-	if err := w.WriteMsg(resp); err != nil {
-		log.Fatalln(err)
-	}
+	return resp, nil
 }

@@ -1,0 +1,46 @@
+# DNS server settings
+dns:
+  # Listening address
+  listen: 0.0.0.0:53
+
+  # Listening protocol
+  # Available options: udp, tcp
+  network: udp
+
+  # DNS server to forward all request
+  # By default using DoT
+  authoritative_dns: 1.1.1.1:853
+
+# BGP server settings
+bgp:
+  # Listening port
+  listen_port: 179
+
+  # ID of the current BGP server
+  # Should be a unique string, IP address is usually used
+  router_id: 192.168.88.247
+
+  # BGP server Autonomous Station Number
+  # Should be unique
+  asn: 65432
+
+  # BGP neighbours settings
+  neighbors:
+    # BGP neighbour Autonomous Station Number
+    # Should be unique
+    asn: 64512
+
+    # BGP neighbours network
+    prefix: 192.168.88.0/24
+
+# Routing rules
+rules:
+  # Gateway address to route matched networks and hosts
+  next_hop: 192.168.1.1
+  zones:
+    - netflix.com.
+
+  # Not implemented
+  networks:
+#    - 192.192.192.192/32
+#    - 192.192.192.0/24

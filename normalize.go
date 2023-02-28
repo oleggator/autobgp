@@ -5,8 +5,6 @@ import (
 	"strings"
 )
 
-// See core/dnsserver/address.go - we should unify these two impls.
-
 // Zones represents a lists of zone names.
 type Zones []string
 
