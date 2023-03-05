@@ -1,4 +1,4 @@
-FROM golang:1.20-alpine3.17 as build
+FROM --platform=$BUILDPLATFORM golang:1.20-alpine3.17 as build
 
 RUN apk add upx
 
@@ -9,7 +9,10 @@ RUN go mod download
 
 COPY *.go .
 
-RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /usr/local/bin/autobgp autobgp \
+ARG TARGETOS
+ARG TARGETARCH
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -ldflags="-s -w" -o /usr/local/bin/autobgp autobgp \
     && upx /usr/local/bin/autobgp
 
 
