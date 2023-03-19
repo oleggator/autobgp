@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-
 	"github.com/miekg/dns"
 	"github.com/osrg/gobgp/v3/api"
 	"github.com/osrg/gobgp/v3/pkg/log"
@@ -11,8 +10,7 @@ import (
 )
 
 type AutoBGP struct {
-	dnsClient dns.Client
-	dnsConn   *dns.Conn
+	dnsClient DNSClient
 
 	bgpServer *server.BgpServer
 
@@ -24,7 +22,6 @@ type AutoBGP struct {
 
 func NewAutoBGP(bgpServer *server.BgpServer, authoritativeDNS string, rules RulesConfig) (*AutoBGP, error) {
 	autoBGP := &AutoBGP{
-		dnsClient: dns.Client{Net: "tcp-tls"},
 		bgpServer: bgpServer,
 		rules:     rules,
 	}
@@ -35,23 +32,19 @@ func NewAutoBGP(bgpServer *server.BgpServer, authoritativeDNS string, rules Rule
 	}
 	autoBGP.netxHopAttr = netxHopAttr
 
-	dnsConn, err := autoBGP.dnsClient.DialContext(context.Background(), authoritativeDNS)
-	if err != nil {
-		return nil, err
-	}
-	autoBGP.dnsConn = dnsConn
-
 	originAttr, err := anypb.New(&apipb.OriginAttribute{Origin: 0})
 	if err != nil {
 		return nil, err
 	}
 	autoBGP.originAttr = originAttr
 
-	return autoBGP, nil
-}
+	dnsClient, err := NewDNSClient(authoritativeDNS)
+	if err != nil {
+		return nil, err
+	}
+	autoBGP.dnsClient = dnsClient
 
-func (a *AutoBGP) Close() {
-	a.dnsConn.Close()
+	return autoBGP, nil
 }
 
 func (a *AutoBGP) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
@@ -70,7 +63,7 @@ func (a *AutoBGP) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 }
 
 func (a *AutoBGP) handleMessage(req *dns.Msg) (*dns.Msg, error) {
-	resp, _, err := a.dnsClient.ExchangeWithConn(req, a.dnsConn)
+	resp, _, err := a.dnsClient.ExchangeDNS(req)
 	if err != nil {
 		return nil, err
 	}
@@ -100,15 +93,14 @@ func (a *AutoBGP) handleMessage(req *dns.Msg) (*dns.Msg, error) {
 			return nil, err
 		}
 
-		_, err = a.bgpServer.AddPath(context.Background(), &apipb.AddPathRequest{
+		if _, err = a.bgpServer.AddPath(context.Background(), &apipb.AddPathRequest{
 			TableType: apipb.TableType_ADJ_OUT,
 			Path: &apipb.Path{
 				Nlri:   nlri,
 				Pattrs: []*anypb.Any{a.originAttr, a.netxHopAttr},
 				Family: &apipb.Family{Afi: apipb.Family_AFI_IP, Safi: apipb.Family_SAFI_UNICAST},
 			},
-		})
-		if err != nil {
+		}); err != nil {
 			return nil, err
 		}
 	}
