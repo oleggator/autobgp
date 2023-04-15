@@ -33,7 +33,10 @@ func (c *DNSClient) ExchangeDNS(m *dns.Msg) (r *dns.Msg, rtt time.Duration, err 
 
 		r, rtt, err = c.client.ExchangeWithConn(m, c.conn)
 		if err != nil {
-			c.conn.Close()
+			if c.conn != nil {
+				c.conn.Close()
+			}
+
 			c.conn = nil
 
 			continue
